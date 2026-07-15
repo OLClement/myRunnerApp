@@ -17,14 +17,36 @@ Ce fichier documente **l'état d'avancement**, **les décisions prises pendant l
   répond `200`. 6 tables créées via Alembic (`users`, `activities`, `workout_templates`,
   `planned_workouts`, `prep_plans`, `prep_weeks`) — modèles portés 1:1 depuis l'ancien repo
   Flask.
-- **Mobile** (`/mobile`) : app Flutter qui compile et tourne sur le simulateur iOS, écran de
-  login placeholder affiché, structure de dossiers en place (`auth`, `settings`,
-  `activities`, `dashboard`).
+- **Mobile** (`/mobile`) : app Flutter qui compile et tourne sur le simulateur iOS, structure
+  de dossiers en place (`auth`, `settings`, `activities`, `dashboard`).
 
-### ⬜ Lot 1 — MVP (pas commencé)
+### 🟡 Lot 1 — MVP (en cours)
 
-Auth Strava → JWT (câbler le vrai bouton login), Activities (sync Strava réelle), Dashboard
-(graphes), Settings (fc_max, PR). Détail dans `instructions.MD` section 4.
+- ✅ **Auth Strava → JWT** : `GET /auth/strava/login` (redirige vers Strava),
+  `GET /auth/strava/callback` (échange le code, upsert `User`, émet JWT access+refresh,
+  redirige vers `myrunner://strava/callback?...`), `POST /auth/refresh`, `POST /auth/logout`.
+  Côté mobile : écran login réel via `flutter_web_auth_2`, tokens stockés dans
+  `flutter_secure_storage`. Vérifié en conditions réelles (vrai compte Strava).
+- ✅ **Activities** : `GET /activities`, `POST /activities/sync` (limit 50),
+  `POST /activities/sync/full` (resync complet), `POST /activities/sync/repair` (recalcule
+  `charge_load` manquant) — port de `strava_service.py`. Écran liste + pull-to-refresh côté
+  mobile. Vérifié avec de vraies activités Strava (charge calculée correctement).
+- ✅ **Dashboard** : `GET /dashboard?period=` — charge hebdomadaire par sport + moyenne
+  mobile 4 semaines + KPIs (semaine en cours, moyenne 4 sem., projection). Port simplifié de
+  la route `/dashboard` de l'ancien Flask app : la répartition par zones FC et les bandes de
+  volatilité journalière (MM7j + écart-type 28j) n'ont **pas** été portées pour l'instant
+  (scope réduit volontairement). Écran mobile avec graphe `fl_chart` (charge hebdo + moyenne
+  mobile) + tuiles KPI.
+- ⬜ **Settings** (`fc_max`, PR) — pas commencé.
+
+Détail du découpage dans `instructions.MD` section 4.
+
+### Limites connues à garder en tête
+- Pas de session persistante au démarrage : l'app affiche toujours l'écran de login au
+  lancement, même si un JWT valide est déjà dans le Keychain (pas de vérification/auto-skip
+  au démarrage pour l'instant).
+- `JWT_SECRET` par défaut dans `.env.example` est court — à renforcer (chaîne aléatoire
+  32+ caractères) avant tout déploiement réel.
 
 ---
 
@@ -44,6 +66,12 @@ Auth Strava → JWT (câbler le vrai bouton login), Activities (sync Strava rée
   réutilisation d'un projet existant, pour ne rien risquer d'écraser). C'est une base cloud
   partagée entre toutes les machines de dev — voir plus bas, pas besoin d'en recréer une sur
   un autre ordinateur.
+- **Charte graphique** : palette validée (contraste + daltonisme vérifiés par script, pas à
+  l'œil — voir la skill `dataviz`), orange (`#EB6834` clair / `#D95926` sombre) comme couleur
+  de marque, surfaces crème/sombre chaudes, typographie système par défaut (Material 3, pas de
+  police custom). Définie dans `mobile/lib/core/theme.dart`. Mode sombre gratuit via
+  `themeMode: ThemeMode.system`. La même palette catégorielle (8 teintes, ordre fixe) sert
+  pour les graphes du dashboard.
 
 ---
 
@@ -113,14 +141,15 @@ myRunnerApp/
 ├── README.md            # ce fichier
 ├── api/                  # FastAPI
 │   ├── app/
-│   │   ├── main.py        # app FastAPI, CORS, /health
+│   │   ├── main.py        # app FastAPI, CORS, /health, routers
 │   │   ├── config.py      # settings (.env)
 │   │   ├── db.py           # engine SQLAlchemy, Base, get_db
 │   │   ├── models.py       # modèles (port de l'ancien models.py Flask)
+│   │   ├── schemas.py      # schémas Pydantic (requêtes/réponses)
 │   │   ├── security.py     # JWT (création/validation)
-│   │   ├── deps.py         # get_current_user
-│   │   ├── routers/        # endpoints (vide pour l'instant, Lot 1)
-│   │   └── services/       # logique métier portée (Lot 1)
+│   │   ├── deps.py         # get_current_user, get_strava_token
+│   │   ├── routers/        # auth.py, activities.py, dashboard.py (settings.py à venir)
+│   │   └── services/       # strava_auth.py, strava_service.py, dashboard_service.py
 │   ├── migrations/         # Alembic
 │   ├── requirements.txt
 │   └── .env.example
@@ -128,8 +157,8 @@ myRunnerApp/
     ├── lib/
     │   ├── main.dart
     │   ├── app.dart         # go_router
-    │   ├── core/             # api_client (dio), secure_storage
-    │   └── features/         # auth, settings, activities, dashboard
+    │   ├── core/             # api_client (dio), secure_storage, theme
+    │   └── features/         # auth, activities, dashboard (settings à venir)
     └── ios/Runner/Info.plist # scheme custom myrunner://
 ```
 
