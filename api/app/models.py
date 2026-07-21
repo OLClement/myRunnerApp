@@ -48,6 +48,12 @@ class Activity(Base):
     charge_load = Column(Float)
     hr_data = Column(Text, nullable=True)  # JSON list de FC
     velocity_data = Column(Text, nullable=True)  # JSON list de vitesse
+    z1_min = Column(Float, nullable=True)
+    z2_min = Column(Float, nullable=True)
+    z3_min = Column(Float, nullable=True)
+    z4_min = Column(Float, nullable=True)
+    z5_min = Column(Float, nullable=True)
+    below_z1_min = Column(Float, nullable=True)  # temps FC < seuil Z1 (non compté dans la charge)
 
     def __repr__(self) -> str:
         return f"<Activity {self.name} - {self.sport_type}>"
@@ -63,6 +69,9 @@ class WorkoutTemplate(Base):
     duration_min = Column(Integer, nullable=True)
     zone = Column(String(20), nullable=True)  # Z1, Z2, Z3, Z4, Z5, Mixte
     description = Column(Text, nullable=True)
+    # False pour les templates auto-créés par une séance "from scratch" dont l'utilisateur n'a
+    # pas coché "garder comme template" — reste rattaché à la séance mais masqué du picker.
+    is_reusable = Column(Boolean, nullable=False, default=True, server_default="true")
     created_at = Column(DateTime, default=_utcnow)
 
     planned = relationship("PlannedWorkout", backref="template", lazy=True)
@@ -80,7 +89,11 @@ class PlannedWorkout(Base):
     planned_date = Column(Date, nullable=True)  # null = dans le pool
     week_start = Column(Date, nullable=True)  # lundi de la semaine
     status = Column(String(20), default="planned")  # planned / done / missed
-    strava_activity_id = Column(BigInteger, nullable=True)  # pour matching futur
+    strava_activity_id = Column(BigInteger, nullable=True)  # legacy, jamais rempli — voir matched_activity_id
+    # Activité (interne, pas Strava) qui a réalisé cette séance planifiée — posé par le matching
+    # même-jour/même-sport dans routers/planning.py::list_planned, ou manuellement via /match.
+    matched_activity_id = Column(Integer, ForeignKey("activities.id"), nullable=True)
+    matched_activity = relationship("Activity")
     custom_name = Column(String(255), nullable=True)  # override nom template
     notes = Column(Text, nullable=True)  # notes spécifiques
     created_at = Column(DateTime, default=_utcnow)

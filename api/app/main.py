@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import activities, auth, dashboard
+from app.routers import activities, auth, dashboard, planning, settings
 
 app = FastAPI(title="MyRunner API")
 
@@ -15,6 +15,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(activities.router)
 app.include_router(dashboard.router)
+app.include_router(settings.router)
+app.include_router(planning.router)
 
 
 @app.get("/health")

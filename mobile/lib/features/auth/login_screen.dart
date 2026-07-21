@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/theme.dart';
 import 'auth_repository.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -38,7 +39,7 @@ class _LoginScreenState extends State<LoginScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('MyRunner', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+            const Text('MyRunner', style: TextStyle(fontSize: 34, fontWeight: FontWeight.w800)),
             const SizedBox(height: 24),
             FilledButton(
               onPressed: _loading ? null : _login,
@@ -54,7 +55,11 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 16),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 32),
-                child: Text(_errorMessage!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
+                child: Text(
+                  _errorMessage!,
+                  style: const TextStyle(color: AppColors.statusCritical),
+                  textAlign: TextAlign.center,
+                ),
               ),
             ],
           ],

@@ -10,4 +10,8 @@ class ActivitiesRepository {
   Future<void> sync() async {
     await ApiClient.instance.dio.post('/activities/sync');
   }
+
+  Future<void> syncFull() async {
+    await ApiClient.instance.dio.post('/activities/sync/full');
+  }
 }

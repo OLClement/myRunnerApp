@@ -1,0 +1,162 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+MyRunner iOS: a rewrite of an older Flask running-coach web app as **FastAPI (backend) + Supabase
+(managed Postgres) + Flutter (mobile)**, with a home-rolled JWT issued after Strava OAuth (not
+Supabase Auth). Mono-repo: `/api` (FastAPI) + `/mobile` (Flutter). Product/technical rationale and
+the lot-by-lot roadmap live in `instructions.MD`; `README.md` tracks actual build progress and
+decisions made along the way — read both before making architectural changes.
+
+## Commands
+
+### Backend (`/api`)
+
+```bash
+cd api
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # first-time setup
+.venv/bin/alembic upgrade head                                        # apply migrations (idempotent)
+.venv/bin/uvicorn app.main:app --reload                                # dev server, http://localhost:8000
+curl http://localhost:8000/health                                      # should return {"status":"ok"}
+.venv/bin/alembic revision --autogenerate -m "..."                    # new migration after model changes
+```
+
+`api/.env` (copied manually, not in git) must define `DATABASE_URL`, `STRAVA_CLIENT_ID`,
+`STRAVA_CLIENT_SECRET`, `JWT_SECRET`, etc. — see `api/.env.example`. There is **no automated
+backend test suite**; verify changes by hitting endpoints with `curl` (generate a throwaway JWT via
+`app.security.create_access_token(user_id)` in a `python -c` snippet if you need an authenticated
+request) and by reading the `uvicorn` log.
+
+### Mobile (`/mobile`)
+
+```bash
+flutter pub get
+flutter analyze                              # lint/typecheck — run after every change, must be clean
+flutter test test/widget_test.dart           # the one existing test
+flutter run -d <simulator-id>                # launch on a booted iOS simulator, hot reload on save
+```
+
+Requires a full Xcode install (not just Command Line Tools) and a downloaded iOS simulator runtime
+(`xcodebuild -downloadPlatform iOS`). `flutter run` needs a full restart (not just hot reload) to
+pick up changes to `main.dart`/`app.dart`-level structure (routing, theme).
+
+## Architecture
+
+### Data flow
+
+```
+Flutter (iOS)  ──HTTPS/JSON──▶  FastAPI  ──SQLAlchemy──▶  Supabase Postgres
+                                    │
+                                    ├─▶ Strava API (OAuth + activity data)
+                                    └─▶ Groq API (LLM planning/prep — dependency + `config.groq_api_key`
+                                        exist, but no endpoint calls it yet; see Current state)
+```
+
+### Auth
+
+Strava OAuth happens through the backend, not the client: Flutter opens
+`GET /auth/strava/login` in an in-app browser (`flutter_web_auth_2`) with redirect URI
+`http://localhost:8000/auth/strava/callback` (works from the iOS **simulator** because it shares
+the host Mac's network — no ngrok/Render needed for local dev; Strava requires a "real" domain,
+not a custom scheme, hence `localhost`). The backend exchanges the code, upserts the `User`, and
+redirects to the custom scheme `myrunner://strava/callback?...` which `flutter_web_auth_2`
+intercepts. JWTs (access + refresh) are **stateless** — no server-side revocation table —
+validated in `app/deps.py::get_current_user`. Mobile stores tokens in `flutter_secure_storage`
+(Keychain) and attaches them via a `dio` interceptor in `core/api_client.dart` that
+auto-refreshes on 401.
+
+Known limitation: no persistent-session check at launch — the app always shows the login screen
+first, even with a valid JWT already in the Keychain.
+
+### Backend (`api/app`)
+
+Standard router → service → model layering: `routers/*.py` (HTTP layer, one file per resource:
+`auth`, `activities`, `dashboard`, `settings`, `planning`) call into `services/*.py` (Strava API
+calls, charge calculation, dashboard aggregation) which operate on SQLAlchemy models in
+`models.py`. Not every router has a service — `planning.py` and `settings.py` are thin enough
+(plain CRUD) to query the ORM directly instead.
+
+- **`Activity.hr_data`/`velocity_data`** are `Text` columns holding full per-second JSON streams —
+  large. Any query that doesn't need them (list views, dashboard aggregation) **must** use
+  `.options(load_only(...))` to exclude them, or every request drags megabytes across the network
+  from Supabase. This bit us once already (multi-second load times on the activities list).
+- The SQLAlchemy engine (`db.py`) is created with `pool_pre_ping=True, pool_recycle=300` —
+  Supabase's connection pooler silently drops idle connections, and without pre-ping this
+  surfaces as a `psycopg2.OperationalError: server closed the connection unexpectedly` after any
+  period of inactivity (e.g. the dev server sitting idle between sessions).
+- `charge_load` is computed from Strava HR streams in `strava_service.py` (per-sport weighting in
+  `SPORT_FACTORS`/`SPORT_TYPE_TO_GROUP`) — this is the core metric the whole app is built around
+  (dashboard, activity list, planning's plan-vs-actual view).
+- `sync` (recent, capped) vs `sync/full` (deletes local activities, re-fetches up to 2 years,
+  ~0.5s sleep per activity between Strava calls to stay under rate limits — a full resync can take
+  minutes) vs `sync/repair` (recomputes `charge_load` only where missing) are three distinct
+  endpoints with different cost/completeness tradeoffs; don't conflate them.
+- **`WorkoutTemplate`** rows with `user_id IS NULL` are global templates visible to every user
+  (seeded by the `9eea66f3a625_seed_default_workout_templates` migration); `user_id` set = a
+  user's own custom template. `planning.py` queries always `OR` the two together
+  (`or_(WorkoutTemplate.user_id.is_(None), WorkoutTemplate.user_id == current_user.id)`) — keep
+  that filter when adding new template queries, or per-user templates leak across accounts /
+  global templates disappear.
+- `PlannedWorkout.zone` (`Z1`–`Z5`, `Mixte`) is the "session type" concept end-to-end (backend and
+  mobile) — the older Flask app's `EF`/`VMA`/`I`/`T`/`R` labels were **not** carried over.
+
+### Mobile (`mobile/lib`)
+
+Feature-first structure: `features/<name>/` holds a screen + a `*_repository.dart` (thin wrapper
+around `ApiClient.instance.dio`) + a plain data model, per feature (`auth`, `activities`,
+`dashboard`, `settings`, `planning`, `prepa`). `core/` holds cross-cutting infra: `api_client.dart`
+(dio + JWT interceptor), `secure_storage.dart` (Keychain), `theme.dart` (design system, see
+below), `app_shell.dart` (bottom nav), `coming_soon_screen.dart` (placeholder screens).
+
+**No riverpod in practice**: `flutter_riverpod` is a dependency and `main.dart` wraps the app in
+a `ProviderScope`, but no screen actually uses a `Provider`/`Consumer`/`StateNotifier` — every
+screen is a plain `StatefulWidget` calling its repository directly in `initState`/callbacks and
+holding results in local `setState` fields. Follow that pattern for new screens rather than
+introducing riverpod providers, unless you're deliberately migrating the whole app's state
+management (a bigger decision to raise with the user first).
+
+Navigation (`app.dart`) is `go_router` with a `StatefulShellRoute.indexedStack` holding the four
+bottom-nav tabs (Dashboard / Activités / Planning / Prépa, state preserved per tab); `/login` and
+`/settings` live outside the shell as plain pushed routes. `prepa` (Lot 3) is still a
+`ComingSoonScreen` placeholder wired into a real route so the nav shell doesn't need to change
+shape once that lot lands.
+
+**Planning (`features/planning/`)** is the most involved screen: a local segmented-button toggle
+(`_PlanningView` enum, no route/query-param involved) switches between two independently-fetched
+views inside the same `PlanningScreen` state —
+- **Plans**: a chronological, vertically-scrollable list grouped by week then day, deliberately
+  windowed to the *current + next 2 weeks only* (`_weeksShown = 3`, anchored on `_anchorWeekStart`)
+  to avoid duplicating what the unbounded Activités list already shows for past sessions.
+- **Calendrier**: a hand-rolled month grid (`_calendarMonth`/`_calendarGridStart/End`), not the
+  `table_calendar` package floated in `instructions.MD` — it was never added as a dependency.
+  Independent of the Plans window; always shows the full selected month including past days.
+
+Both views merge **completed** `Activity` rows and **planned** `PlannedWorkout` rows for the same
+date range (the "plan vs actual" comparison is the point of this tab) — `_SessionCard`/
+`_CalendarSessionChip` render both through the same `sport_style.dart` icon+color convention used
+on the Activités list (zone-pastel accents apply only to `PlannedWorkout` trailing badges); the
+done/planned distinction comes from the trailing content (charge number vs. zone badge), not from
+icon color. It's currently read/write in Plans (tap a day → place/remove a template via
+`/planning/planned`) but read-only in Calendrier (no drag & drop yet).
+
+**Design system (`core/theme.dart`)**: navy/periwinkle palette (`AppColors`) — light page background,
+white cards, a fixed-color `navy` "hero" surface used for emphasized blocks (e.g. the dashboard
+chart card) regardless of light/dark theme, `accentLight`/`accentDark` as the brand/button color.
+The 8-hue `categoricalLight`/`categoricalDark` arrays are validated for contrast and colorblind-safe
+adjacency (see the `dataviz` skill) — **fixed slot order, never reorder or reassign per filter**;
+they're shared by the dashboard chart (`fl_chart`) and the activity-list sport-type badges
+(`features/activities/sport_style.dart` maps raw Strava `sport_type` strings to a group/icon/slot,
+mirroring the backend's `SPORT_TYPE_TO_GROUP`). Reuse existing roles from `AppColors`/`AppTheme`
+(e.g. `AppTheme.cardRadius`) rather than hand-picking new colors or radii.
+
+### Current state
+
+Lot 0 (foundations) and Lot 1 (Auth, Activities, Dashboard, Settings) are built. Lot 2 (Planning)
+is **partially** built: `WorkoutTemplate`/`PlannedWorkout` CRUD and the mobile Plans/Calendrier
+views work end-to-end, but the Groq-based "AI placement" endpoint from `instructions.MD` §4
+(`/planning/ai`) does not exist yet — placement is manual only (pick a date, pick a template).
+Lot 3 (Prep) has its models (`PrepPlan`/`PrepWeek`) migrated but **no router, service, or mobile
+screen** — `prepa` is still a `ComingSoonScreen` placeholder. Treat `README.md`'s "État
+d'avancement" section as stale on these two points; this file reflects the actual code.

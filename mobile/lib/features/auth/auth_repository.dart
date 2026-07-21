@@ -32,4 +32,13 @@ class AuthRepository {
 
     await SecureStorage.instance.saveTokens(accessToken: accessToken, refreshToken: refreshToken);
   }
+
+  Future<void> logout() async {
+    try {
+      await ApiClient.instance.dio.post('/auth/logout');
+    } catch (_) {
+      // JWT stateless : rien de bloquant côté serveur, on nettoie le client dans tous les cas.
+    }
+    await SecureStorage.instance.clear();
+  }
 }

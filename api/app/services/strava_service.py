@@ -179,6 +179,28 @@ def calculate_charge(hr_data: list[float], sport_type: str, fc_max_run: float) -
     return sum(get_charge_coefficient(hr, fc_max, factor) for hr in hr_data)
 
 
+def calculate_zone_minutes(hr_data: list[float], sport_type: str, fc_max_run: float) -> dict[str, float]:
+    """Répartit un stream FC (1 échantillon ≈ 1s, même hypothèse que calculate_charge) en
+    minutes passées sous chaque zone Z1-Z5, plus `below_z1` pour le temps sous le seuil Z1."""
+    fc_max = get_fc_max_by_sport(sport_type, fc_max_run)
+    counts = {"below_z1": 0, "z1": 0, "z2": 0, "z3": 0, "z4": 0, "z5": 0}
+
+    for hr in hr_data:
+        hr_percent = (hr / fc_max) * 100
+        if hr_percent < HR_ZONES_PCT[1][0]:
+            counts["below_z1"] += 1
+            continue
+        zone_num = 5
+        for z in range(1, 6):
+            min_pct, max_pct = HR_ZONES_PCT[z]
+            if min_pct <= hr_percent < max_pct:
+                zone_num = z
+                break
+        counts[f"z{zone_num}"] += 1
+
+    return {key: round(count / 60.0, 2) for key, count in counts.items()}
+
+
 def compute_pr_from_velocity(velocity_data: list[float], target_km: float) -> int | None:
     target_m = target_km * 1000
     n = len(velocity_data)
@@ -278,11 +300,13 @@ def sync_activities(user: User, token: str, db: Session, limit: int | None = Non
         hr_data = None
         velocity_data = None
         charge = None
+        zone_minutes = None
 
         if streams:
             if "heartrate" in streams:
                 hr_data = json.dumps(streams["heartrate"]["data"])
                 charge = calculate_charge(streams["heartrate"]["data"], sport_type, fc_max)
+                zone_minutes = calculate_zone_minutes(streams["heartrate"]["data"], sport_type, fc_max)
             if "velocity_smooth" in streams:
                 velocity_data = json.dumps(streams["velocity_smooth"]["data"])
 
@@ -306,6 +330,13 @@ def sync_activities(user: User, token: str, db: Session, limit: int | None = Non
             existing.charge_load = round(charge, 2) if charge else None
             existing.hr_data = hr_data
             existing.velocity_data = velocity_data
+            if zone_minutes:
+                existing.z1_min = zone_minutes["z1"]
+                existing.z2_min = zone_minutes["z2"]
+                existing.z3_min = zone_minutes["z3"]
+                existing.z4_min = zone_minutes["z4"]
+                existing.z5_min = zone_minutes["z5"]
+                existing.below_z1_min = zone_minutes["below_z1"]
             updated_count += 1
         else:
             new_act = Activity(
@@ -321,6 +352,12 @@ def sync_activities(user: User, token: str, db: Session, limit: int | None = Non
                 charge_load=round(charge, 2) if charge else None,
                 hr_data=hr_data,
                 velocity_data=velocity_data,
+                z1_min=zone_minutes["z1"] if zone_minutes else None,
+                z2_min=zone_minutes["z2"] if zone_minutes else None,
+                z3_min=zone_minutes["z3"] if zone_minutes else None,
+                z4_min=zone_minutes["z4"] if zone_minutes else None,
+                z5_min=zone_minutes["z5"] if zone_minutes else None,
+                below_z1_min=zone_minutes["below_z1"] if zone_minutes else None,
             )
             db.add(new_act)
             new_count += 1
@@ -348,6 +385,34 @@ def repair_missing_charge(user: User, token: str, db: Session) -> int:
             fixed += 1
 
         if i % 20 == 0:
+            db.commit()
+
+    db.commit()
+    return fixed
+
+
+def backfill_hr_zones(user: User, db: Session) -> int:
+    """Calcule z1_min..below_z1_min pour les activités qui ont déjà un hr_data stocké mais pas
+    encore de zones (ex: activités synchronisées avant l'ajout de cette fonctionnalité). Ne fait
+    aucun appel Strava — recalcule à partir du stream déjà en base."""
+    if not user.fc_max:
+        return 0
+
+    missing = db.query(Activity).filter_by(user_id=user.id, z1_min=None).filter(Activity.hr_data.isnot(None)).all()
+
+    fixed = 0
+    for i, act in enumerate(missing, 1):
+        hr_data = json.loads(act.hr_data)
+        zone_minutes = calculate_zone_minutes(hr_data, act.sport_type, user.fc_max)
+        act.z1_min = zone_minutes["z1"]
+        act.z2_min = zone_minutes["z2"]
+        act.z3_min = zone_minutes["z3"]
+        act.z4_min = zone_minutes["z4"]
+        act.z5_min = zone_minutes["z5"]
+        act.below_z1_min = zone_minutes["below_z1"]
+        fixed += 1
+
+        if i % 50 == 0:
             db.commit()
 
     db.commit()
