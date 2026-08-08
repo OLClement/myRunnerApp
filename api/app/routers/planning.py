@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.db import get_db
 from app.deps import get_current_user
@@ -82,6 +82,10 @@ def list_planned(
             Activity.start_date >= datetime.combine(start, time.min),
             Activity.start_date <= datetime.combine(end, time.max),
         )
+        # hr_data/velocity_data sont de gros JSON texte non utilisés ici (seuls id/start_date/
+        # sport_type servent au matching plan-vs-actual) : les exclure évite de transférer des
+        # Mo inutiles depuis Supabase à chaque appel.
+        .options(load_only(Activity.id, Activity.start_date, Activity.sport_type))
         .all()
     )
     activities_by_day: dict[date, list[Activity]] = defaultdict(list)
@@ -227,6 +231,7 @@ def match_planned(
     activity = (
         db.query(Activity)
         .filter(Activity.id == payload.activity_id, Activity.user_id == current_user.id)
+        .options(load_only(Activity.id))
         .first()
     )
     if activity is None:
