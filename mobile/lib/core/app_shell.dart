@@ -16,6 +16,7 @@ class AppShell extends StatelessWidget {
           index,
           initialLocation: index == navigationShell.currentIndex,
         ),
+        labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
         destinations: const [
           NavigationDestination(icon: Icon(Icons.space_dashboard_outlined), label: 'Dashboard'),
           NavigationDestination(icon: Icon(Icons.list_alt_outlined), label: 'Activités'),

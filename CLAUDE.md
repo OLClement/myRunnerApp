@@ -29,6 +29,23 @@ backend test suite**; verify changes by hitting endpoints with `curl` (generate 
 `app.security.create_access_token(user_id)` in a `python -c` snippet if you need an authenticated
 request) and by reading the `uvicorn` log.
 
+### Production deployment (Render)
+
+The backend is deployed on Render as a Blueprint (`render.yaml` at repo root, service
+`myrunner-api`, `rootDir: api`), reachable at the custom domain `https://api.myrunner.fr`
+(CNAME at IONOS → `myrunner-api.onrender.com`; free Render plan, 2 custom domains included).
+Env vars are set manually in Render's dashboard (`sync: false` in the blueprint) from the same
+values as `api/.env`.
+
+**`DATABASE_URL` must use Supabase's connection pooler, not the direct connection string.**
+Render has no working IPv6 egress, and Supabase's direct host (`db.<ref>.supabase.co`) resolves
+to an IPv6 address in some regions — this surfaced as
+`psycopg2.OperationalError: ... Network is unreachable` on every DB-touching request once
+deployed (worked fine locally, where the Mac's IPv6 route works). Fix: use the pooler connection
+string from Supabase dashboard → Connect → Connection Pooling (host
+`aws-0-<region>.pooler.supabase.com:6543`, username `postgres.<project-ref>` instead of just
+`postgres`) — it's IPv4-only by design for exactly this kind of platform.
+
 ### Mobile (`/mobile`)
 
 ```bash
@@ -42,13 +59,55 @@ Requires a full Xcode install (not just Command Line Tools) and a downloaded iOS
 (`xcodebuild -downloadPlatform iOS`). `flutter run` needs a full restart (not just hot reload) to
 pick up changes to `main.dart`/`app.dart`-level structure (routing, theme).
 
+#### Running on a physical iPhone (no App Store)
+
+`mobile/lib/core/api_client.dart`'s `apiBaseUrl` is a compile-time `String.fromEnvironment`
+default-valued to `https://api.myrunner.fr` (the Render deployment, see above) — so a normal
+`flutter build ios --release` + install just works from anywhere (Wi-Fi or cellular), no Mac
+dependency. Xcode signing (`RSV565PQRX` team, automatic signing) is already configured in the
+Xcode project; free-tier signing expires after 7 days, so the build/install needs re-running
+periodically to renew it:
+
+```bash
+flutter build ios --release
+xcrun devicectl device install app --device <device-id> build/ios/iphoneos/Runner.app
+xcrun devicectl device process launch --device <device-id> com.myrunner.mobile   # only works if the phone is unlocked
+```
+
+(`flutter run -d <device-id>` also works for a debug/hot-reload session over the wireless-debugging
+pairing already set up for Clément's iPhone, but a **debug** build refuses to launch by tapping the
+home-screen icon directly — "in iOS 14+, debug mode Flutter apps can only be launched from Flutter
+IDE plugins or from the command line" — hence release builds for anything meant to be opened
+normally afterward.)
+
+To develop against the **local** backend on a physical device instead of Render, override
+`apiBaseUrl` at launch:
+
+```bash
+flutter run -d <device-id> --dart-define=API_BASE_URL=http://dev.myrunner.fr:8000
+```
+
+`dev.myrunner.fr` is a DNS A record (IONOS) pointing at the Mac's LAN IP. This still works for the
+Strava login flow without touching any Strava dashboard setting, because "Authorization Callback
+Domain" is registered as the **root** domain `myrunner.fr` (see Auth below) — Strava auto-covers
+every subdomain under it. Two one-time prerequisites keep the local-IP path from going stale:
+- **DHCP reservation for the Mac** on the router, so its LAN IP (currently `192.168.1.21`) never
+  changes and the DNS record never goes stale.
+- **The iPhone's Wi-Fi DNS set manually to `1.1.1.1`/`8.8.8.8`** (Settings → Wi-Fi → ⓘ → Configure
+  DNS → Manual), so it resolves fresh instead of hitting the router's DNS cache (which lagged
+  behind an IONOS record update by hours during setup). The Mac's Wi-Fi DNS is already set the same
+  way.
+
+Uvicorn needs `--host 0.0.0.0` (not just `--reload`) to accept connections from the phone instead
+of only loopback when running the local backend this way.
+
 ## Architecture
 
 ### Data flow
 
 ```
-Flutter (iOS)  ──HTTPS/JSON──▶  FastAPI  ──SQLAlchemy──▶  Supabase Postgres
-                                    │
+Flutter (iOS)  ──HTTPS/JSON──▶  FastAPI (Render, api.myrunner.fr)  ──SQLAlchemy──▶  Supabase Postgres
+                                    │                                                (via connection pooler)
                                     ├─▶ Strava API (OAuth + activity data)
                                     └─▶ Groq API (LLM planning/prep — dependency + `config.groq_api_key`
                                         exist, but no endpoint calls it yet; see Current state)
@@ -56,16 +115,22 @@ Flutter (iOS)  ──HTTPS/JSON──▶  FastAPI  ──SQLAlchemy──▶  Su
 
 ### Auth
 
-Strava OAuth happens through the backend, not the client: Flutter opens
-`GET /auth/strava/login` in an in-app browser (`flutter_web_auth_2`) with redirect URI
-`http://localhost:8000/auth/strava/callback` (works from the iOS **simulator** because it shares
-the host Mac's network — no ngrok/Render needed for local dev; Strava requires a "real" domain,
-not a custom scheme, hence `localhost`). The backend exchanges the code, upserts the `User`, and
-redirects to the custom scheme `myrunner://strava/callback?...` which `flutter_web_auth_2`
-intercepts. JWTs (access + refresh) are **stateless** — no server-side revocation table —
-validated in `app/deps.py::get_current_user`. Mobile stores tokens in `flutter_secure_storage`
-(Keychain) and attaches them via a `dio` interceptor in `core/api_client.dart` that
-auto-refreshes on 401.
+Strava OAuth happens through the backend, not the client: Flutter opens `GET /auth/strava/login`
+in an in-app browser (`flutter_web_auth_2`) with redirect URI
+`https://api.myrunner.fr/auth/strava/callback` in production (or `http://localhost:8000/...` /
+`http://dev.myrunner.fr:8000/...` for local dev — see the "physical iPhone" section above; Strava
+requires a "real" domain, not a custom scheme, but does accept `localhost`). The Strava API app
+(`client_id` 222626) is **shared** with the older Flask webapp still live at `myrunner.fr` — its
+"Authorization Callback Domain" (strava.com/settings/api) is registered as the **root domain
+`myrunner.fr`**, which Strava treats as covering every subdomain automatically, so the old webapp,
+the new Render API (`api.myrunner.fr`), and local dev (`dev.myrunner.fr`) all work simultaneously
+without ever touching that setting again (Strava only allows one registered domain at a time,
+which would otherwise force choosing between them). The backend exchanges the code, upserts the
+`User`, and redirects to the custom scheme `myrunner://strava/callback?...` which
+`flutter_web_auth_2` intercepts. JWTs (access + refresh) are **stateless** — no server-side
+revocation table — validated in `app/deps.py::get_current_user`. Mobile stores tokens in
+`flutter_secure_storage` (Keychain) and attaches them via a `dio` interceptor in
+`core/api_client.dart` that auto-refreshes on 401.
 
 Known limitation: no persistent-session check at launch — the app always shows the login screen
 first, even with a valid JWT already in the Keychain.
@@ -83,7 +148,8 @@ calls, charge calculation, dashboard aggregation) which operate on SQLAlchemy mo
   `.options(load_only(...))` to exclude them, or every request drags megabytes across the network
   from Supabase. This bit us once already (multi-second load times on the activities list).
 - The SQLAlchemy engine (`db.py`) is created with `pool_pre_ping=True, pool_recycle=300` —
-  Supabase's connection pooler silently drops idle connections, and without pre-ping this
+  Supabase's connection pooler (Supavisor — `DATABASE_URL` must point at it, not the direct host;
+  see Production deployment above) silently drops idle connections, and without pre-ping this
   surfaces as a `psycopg2.OperationalError: server closed the connection unexpectedly` after any
   period of inactivity (e.g. the dev server sitting idle between sessions).
 - `charge_load` is computed from Strava HR streams in `strava_service.py` (per-sport weighting in

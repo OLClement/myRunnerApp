@@ -99,7 +99,10 @@ def build_weekly_dashboard(user: User, db: Session, period: str = "1y") -> dict:
         totals = zone_weekly.get(w, {})
         classified_total = sum(totals.get(z, 0) for z in ZONE_KEYS) + totals.get("below_z1", 0)
         for zone in ZONE_KEYS:
-            pct = round(totals.get(zone, 0) / classified_total * 100, 1) if classified_total > 0 else 0
+            # Le temps "sous Z1" (échauffement/récup) est compté dans le total mais fondu
+            # dans Z1 à l'affichage, sinon la somme des barres n'atteint jamais 100%.
+            value = totals.get(zone, 0) + (totals.get("below_z1", 0) if zone == "Z1" else 0)
+            pct = round(value / classified_total * 100, 1) if classified_total > 0 else 0
             zone_data_all[zone].append(pct)
 
     slice_start = -max_weeks if max_weeks else None

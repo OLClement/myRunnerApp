@@ -1,12 +1,12 @@
 from datetime import date, datetime, time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, load_only
 
 from app.db import get_db
 from app.deps import get_current_user, get_strava_token
 from app.models import Activity, User
-from app.schemas import ActivityOut, RepairResult, SyncResult
+from app.schemas import ActivityDetailOut, ActivityOut, RepairResult, SyncResult
 from app.services.strava_service import backfill_hr_zones, repair_missing_charge, sync_activities
 
 router = APIRouter(prefix="/activities", tags=["activities"])
@@ -44,6 +44,18 @@ def list_activities(
     if end is not None:
         query = query.filter(Activity.start_date <= datetime.combine(end, time.max))
     return query.order_by(Activity.start_date.desc()).all()
+
+
+@router.get("/{activity_id}", response_model=ActivityDetailOut)
+def get_activity(
+    activity_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Activity:
+    activity = db.query(Activity).filter_by(id=activity_id, user_id=current_user.id).first()
+    if activity is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+    return activity
 
 
 @router.post("/sync", response_model=SyncResult)

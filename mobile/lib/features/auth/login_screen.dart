@@ -24,7 +24,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       await _authRepository.loginWithStrava();
-      if (mounted) context.go('/');
+      if (mounted) context.go('/splash');
     } catch (e) {
       setState(() => _errorMessage = 'Connexion échouée ($e)');
     } finally {
@@ -35,34 +35,52 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('MyRunner', style: TextStyle(fontSize: 34, fontWeight: FontWeight.w800)),
-            const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _loading ? null : _login,
-              child: _loading
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                    )
-                  : const Text('Se connecter avec Strava'),
-            ),
-            if (_errorMessage != null) ...[
-              const SizedBox(height: 16),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 32),
-                child: Text(
-                  _errorMessage!,
-                  style: const TextStyle(color: AppColors.statusCritical),
-                  textAlign: TextAlign.center,
-                ),
+      body: Container(
+        width: double.infinity,
+        height: double.infinity,
+        decoration: const BoxDecoration(gradient: AppTheme.heroGradient),
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'MyRunner',
+                    style: TextStyle(fontSize: 40, fontWeight: FontWeight.w800, color: Colors.white),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Coaching et suivi de charge',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.navyMuted),
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _loading ? null : _login,
+                      child: _loading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Se connecter avec Strava'),
+                    ),
+                  ),
+                  if (_errorMessage != null) ...[
+                    const SizedBox(height: 16),
+                    Text(
+                      _errorMessage!,
+                      style: const TextStyle(color: AppColors.statusCritical),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ],
               ),
-            ],
-          ],
+            ),
+          ),
         ),
       ),
     );

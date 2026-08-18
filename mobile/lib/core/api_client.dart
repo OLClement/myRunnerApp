@@ -2,14 +2,21 @@ import 'package:dio/dio.dart';
 
 import 'secure_storage.dart';
 
-/// http://localhost fonctionne sur le simulateur iOS (il partage le réseau du
-/// Mac hôte), mais pas sur un iPhone physique où `localhost` désigne le
-/// téléphone lui-même. Pour tester sur device réel, dev.myrunner.fr est un
-/// enregistrement DNS A pointant vers l'IP LAN du Mac (chez IONOS) — si le
-/// routeur réattribue une autre IP, seul cet enregistrement DNS doit être mis
-/// à jour, pas ce fichier. L'exception ATS correspondante est dans
-/// ios/Runner/Info.plist et doit matcher ce même nom de domaine.
-const apiBaseUrl = 'http://dev.myrunner.fr:8000';
+/// Le backend est déployé sur Render sous le domaine custom `api.myrunner.fr`
+/// (HTTPS, accessible de partout — plus de dépendance au Mac/Wi-Fi maison).
+/// Le compte Strava (client_id partagé avec l'ancienne webapp Flask sur
+/// myrunner.fr) a son "Authorization Callback Domain" réglé sur `myrunner.fr`
+/// (domaine racine) — Strava couvre alors tous les sous-domaines
+/// automatiquement, donc le login fonctionne aussi bien ici que sur le
+/// backend local (`dev.myrunner.fr`) sans jamais avoir à retoucher ce réglage.
+/// Pour développer contre le backend local, relancer avec
+/// `flutter run --dart-define=API_BASE_URL=http://localhost:8000` (simulateur)
+/// ou `--dart-define=API_BASE_URL=http://dev.myrunner.fr:8000` (device
+/// physique, cf. CLAUDE.md).
+const apiBaseUrl = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'https://api.myrunner.fr',
+);
 
 class ApiClient {
   ApiClient._() {
@@ -42,6 +49,20 @@ class ApiClient {
   late final Dio _dio;
 
   Dio get dio => _dio;
+
+  /// Tente de restaurer une session existante (refresh token en Keychain) au
+  /// démarrage de l'app, pour éviter de repasser par l'écran de login à
+  /// chaque lancement. Retourne `false` si aucun refresh token n'est stocké
+  /// ou s'il n'est plus valide (auquel cas le Keychain a été nettoyé).
+  Future<bool> restoreSession() async {
+    try {
+      final refreshToken = await SecureStorage.instance.readRefreshToken().timeout(const Duration(seconds: 5));
+      if (refreshToken == null) return false;
+      return await _tryRefresh();
+    } catch (_) {
+      return false;
+    }
+  }
 
   Future<bool> _tryRefresh() async {
     final refreshToken = await SecureStorage.instance.readRefreshToken();

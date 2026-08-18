@@ -26,6 +26,29 @@ class ActivityOut(BaseModel):
     charge_load: float | None
 
 
+class ActivityDetailOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    strava_id: int
+    name: str | None
+    sport_type: str | None
+    start_date: datetime | None
+    distance_km: float | None
+    duration_min: float | None
+    avg_hr: float | None
+    total_elevation: float | None
+    charge_load: float | None
+    z1_min: float | None
+    z2_min: float | None
+    z3_min: float | None
+    z4_min: float | None
+    z5_min: float | None
+    below_z1_min: float | None
+    hr_data: str | None
+    velocity_data: str | None
+
+
 class SyncResult(BaseModel):
     new: int
     updated: int

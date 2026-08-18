@@ -41,24 +41,50 @@ Ce fichier documente **l'état d'avancement**, **les décisions prises pendant l
 
 Détail du découpage dans `instructions.MD` section 4.
 
+### 🚀 Déploiement production (hors lots — terminé)
+
+L'app tourne maintenant sur l'iPhone de Clément sans câble, sans Mac allumé, utilisable en 4G :
+- **Backend** déployé sur **Render** (plan free) via `render.yaml` (Blueprint), service
+  `myrunner-api`, domaine custom `https://api.myrunner.fr` (CNAME chez IONOS,
+  `myrunner-api.onrender.com` en cible, SSL auto Render).
+- **`DATABASE_URL` doit utiliser le connection pooler Supabase** (Supavisor,
+  `aws-0-eu-north-1.pooler.supabase.com:6543`, user `postgres.<ref-projet>`), pas la connexion
+  directe (`db.<ref>.supabase.co`) — Render n'a pas de sortie IPv6 fonctionnelle, et le host
+  direct de Supabase résout en IPv6 dans certaines régions, ce qui plantait chaque requête
+  touchant la DB (`Network is unreachable`) alors que ça marchait en local.
+- **Callback Strava partagé avec l'ancienne webapp Flask** : le compte Strava (mêmes
+  `client_id`/`client_secret` que l'ancien `myRunner`) a son "Authorization Callback Domain"
+  réglé sur le domaine racine `myrunner.fr` — Strava couvre alors tous les sous-domaines
+  automatiquement (`myrunner.fr` pour l'ancienne webapp, `api.myrunner.fr` pour la nouvelle API,
+  `dev.myrunner.fr` pour le dev local), sans avoir à re-changer ce réglage entre les trois.
+- Côté mobile, `apiBaseUrl` (compile-time, `mobile/lib/core/api_client.dart`) pointe par défaut
+  sur `https://api.myrunner.fr` ; un override `--dart-define=API_BASE_URL=...` permet de
+  développer contre le backend local (simulateur ou device physique — détails dans `CLAUDE.md`).
+- Build/install sur iPhone en **release** (pas debug) pour pouvoir lancer l'app depuis l'écran
+  d'accueil sans session `flutter run` active — voir `CLAUDE.md` pour les commandes exactes.
+
 ### Limites connues à garder en tête
 - Pas de session persistante au démarrage : l'app affiche toujours l'écran de login au
   lancement, même si un JWT valide est déjà dans le Keychain (pas de vérification/auto-skip
   au démarrage pour l'instant).
-- `JWT_SECRET` par défaut dans `.env.example` est court — à renforcer (chaîne aléatoire
-  32+ caractères) avant tout déploiement réel.
+- Signature Xcode gratuite (compte perso, pas de compte développeur payant) : expire tous les
+  7 jours, il faut relancer un build/install périodiquement pour la renouveler.
+- ~~`JWT_SECRET` par défaut dans `.env.example` est court~~ — corrigé : vrais secrets aléatoires
+  générés (`openssl rand -hex 32`), différents entre `api/.env` local et Render.
 
 ---
 
 ## Décisions prises pendant le build (au-delà de `instructions.MD`)
 
-- **Boucle de dev 100% locale, pas de ngrok ni de Render pour le MVP.** Le callback OAuth
-  Strava exige une redirect_uri sur un domaine "réel" (pas un scheme custom `myrunner://`
-  directement) — mais Strava accepte `localhost`, et le simulateur iOS partage le réseau du
-  Mac hôte. Donc : `STRAVA_REDIRECT_URI=http://localhost:8000/auth/strava/callback`, et le
-  backend FastAPI redirige ensuite vers `myrunner://strava/callback?...` que
-  `flutter_web_auth_2` intercepte pour fermer le navigateur in-app. Render/ngrok ne
-  redeviendront utiles que pour un test sur device physique (hors périmètre actuel).
+- **Boucle de dev locale pour le MVP, puis déploiement Render une fois le besoin d'un vrai
+  device apparu.** Le callback OAuth Strava exige une redirect_uri sur un domaine "réel" (pas
+  un scheme custom `myrunner://` directement) — mais Strava accepte `localhost`, et le
+  simulateur iOS partage le réseau du Mac hôte, donc `http://localhost:8000/...` a suffi tant
+  que le dev restait sur simulateur. Le backend FastAPI redirige ensuite vers
+  `myrunner://strava/callback?...` que `flutter_web_auth_2` intercepte pour fermer le
+  navigateur in-app. Une fois le besoin de tester sur iPhone physique arrivé, le backend a été
+  déployé sur Render (voir section "Déploiement production" ci-dessus) plutôt que de rester sur
+  du ngrok/Wi-Fi maison à long terme.
 - **Gestion des paquets Python** : `venv` + `requirements.txt` (pas de Poetry/uv).
 - **JWT** : `PyJWT`, tokens access + refresh **stateless** (pas de table de révocation
   serveur pour le MVP).
